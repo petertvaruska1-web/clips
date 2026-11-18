@@ -15,6 +15,8 @@ dependencies = [
   "google-auth-oauthlib>=1.2",
   "psutil>=6",
   "nvidia-ml-py>=12",
+  "nvidia-cublas-cu12==12.8.4.1",
+  "nvidia-cudnn-cu12==9.10.2.21",
 ]
 
 [dependency-groups]
