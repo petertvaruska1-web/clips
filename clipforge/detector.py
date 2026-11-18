@@ -56,6 +56,7 @@ class _Sec:
     tokens: dict = field(default_factory=lambda: defaultdict(set))   # user -> tokens
     caps: set = field(default_factory=set)
     punct: set = field(default_factory=set)
+    texts: list = field(default_factory=list)
 
 
 def _robust(hist: deque, x: float, floor: float) -> float:
@@ -119,6 +120,8 @@ class ChannelDetector:
             return  # too late, second already closed
         sec = self.secs[s]
         sec.per_user[ev.user] += 1
+        if len(sec.texts) < 40 and sec.per_user[ev.user] == 1:
+            sec.texts.append(text[:120])
         if sec.per_user[ev.user] <= 2:
             sec.msgs += 1
         toks = normalize(text)
@@ -282,17 +285,22 @@ class ChannelDetector:
         category = max(cats, key=cats.get) if any(cats.values()) else "reaction"
         lag = self.cfg.chat_lag
         pf = self.series.get(b["peak"], {})
+        lines = Counter()
+        for k in range(b["start"], b["end"] + 1):
+            for txt in self.secs.get(k, _Sec()).texts:
+                lines[" ".join(txt.split())] += 1
         return Moment(channel=self.channel, t_on=t_on, t_peak=float(b["peak"]),
                       t_event=t_on - lag, t_end_hint=float(b["end"]) - lag + 2.0,
                       hype_peak=float(b["peak_h"]), burst_size=float(b["size"]), category=category,
                       rise_time=float(b["peak"]) - t_on,
                       features={k: pf.get(k) for k in ("z_u", "z_v", "react", "clip", "unison", "caps",
-                                                       "pen", "top_token", "n_users")})
+                                                       "pen", "top_token", "n_users")}
+                      | {"chat_lines": [l for l, _ in lines.most_common(15)]})
 
     def _gc(self, s: int) -> None:
         if s % 60:
             return
-        for k in [k for k in self.secs if k < s - 120]:
+        for k in [k for k in self.secs if k < s - 240]:
             del self.secs[k]
         for k in [k for k in self.series if k < s - 600]:
             del self.series[k]

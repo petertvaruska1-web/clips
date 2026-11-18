@@ -88,3 +88,12 @@ def test_bots_and_commands_do_not_count():
             det.feed(msg(t + s + k / 60, f"u{k % 50}", "!drop"))
     t = baseline(det, t + 10, 60, rng=random.Random(3))
     assert run_ticks(det, T0, t + 5) == []
+
+
+def test_moment_carries_top_chat_lines():
+    det = ChannelDetector("c", ClipCfg())
+    t = baseline(det, T0, 900)
+    t = flood(det, t, 10, [f"u{i}" for i in range(50)], text="KEKW")
+    t = baseline(det, t, 60, rng=random.Random(3))
+    m = run_ticks(det, T0, t + 5)[0]
+    assert m.features["chat_lines"][0].lower() == "kekw"

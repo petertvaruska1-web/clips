@@ -1,0 +1,49 @@
+# ClipForge settings. Edit freely; restart ClipForge after changes.
+
+# Priority streamers (Twitch login: weight). Others are auto-discovered from the
+# "Grand Theft Auto VI" category; weight multiplies their priority and score boost.
+streamers:
+  kaicenat: 1.5
+  caseoh_: 1.5
+  xqc: 1.5
+  theburntpeanut: 1.5
+  stableronaldo: 1.5
+  zackrawrr: 1.5
+  jynxzi: 1.5
+  hasanabi: 1.2
+  jasontheween: 1.2
+  lacy: 1.2
+  plaqueboymax: 1.2
+  yourragegaming: 1.2
+  brucedropemoff: 1.2
+  rdcgaming: 1.2
+  sodapoppin: 1.2
+  lirik: 1.2
+  summit1g: 1.2
+  moonmoon: 1.2
+  emiru: 1.2
+  qtcinderella: 1.2
+  schlatt: 1.2
+  ishowspeed: 1.2
+
+# Streamers to never clip (e.g. after a copyright claim).
+blocklist: []
+
+capacity:
+  live: 8          # streams recorded live (fast clips)
+  chat_only: 25    # streams watched by chat; clips cut from VODs
+  busy_live: 3     # live recordings while you're gaming
+  min_viewers: 1500
+
+clip:
+  pre_roll: 20     # seconds before the event
+  chat_lag: 7      # typical delay between event and chat reaction
+
+posting:
+  per_day: 8
+  min_gap_minutes: 60
+  exceptional_extra: 3
+  per_streamer_day: 3
+
+youtube:
+  privacy: private   # dry run; change to "public" once the clips look good
