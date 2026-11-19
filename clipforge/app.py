@@ -38,6 +38,15 @@ MAX_QUEUE_AGE = 30 * 60
 LAYOUT_TTL = 30 * 60
 
 
+def safe_unlink(path: Path) -> bool:
+    """Delete a file; a locked or vanished file is skipped instead of crashing the caller."""
+    try:
+        Path(path).unlink(missing_ok=True)
+        return True
+    except OSError:
+        return False
+
+
 def _iso(ts: float) -> str:
     return datetime.fromtimestamp(ts, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -427,10 +436,10 @@ class App:
                 keep_s = self.cfg.disk.keep_uploaded_days * 86400
                 for f in self.dirs["out"].glob("*.mp4"):
                     if now - f.stat().st_mtime > keep_s:
-                        f.unlink(missing_ok=True)
+                        safe_unlink(f)
                 for f in self.dirs["raw"].glob("*"):
                     if now - f.stat().st_mtime > 3600:
-                        f.unlink(missing_ok=True)
+                        safe_unlink(f)
                 keep_awake(bool(self.detectors))
             except Exception as e:
                 log.exception("housekeeping failed: %s", e)
