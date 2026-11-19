@@ -46,4 +46,4 @@ posting:
   per_streamer_day: 3
 
 youtube:
-  privacy: private   # dry run; change to "public" once the clips look good
+  privacy: public    # uploads go live automatically; set to "private" to pause public posting

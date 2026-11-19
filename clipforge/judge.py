@@ -14,7 +14,8 @@ from .safety import has_slur, mask_profanity
 log = logging.getLogger(__name__)
 
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
-GROQ_MODEL = "llama-3.3-70b-versatile"
+GROQ_MODEL = "openai/gpt-oss-120b"
+GROQ_VISION_MODEL = "qwen/qwen3.8-27b"
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 GEMINI_MODEL = "gemini-flash-lite-latest"
 
@@ -135,3 +136,38 @@ def judge(ctx: JudgeContext, keys: dict[str, str]) -> Verdict:
                        spoiler_risk=str(j.get("spoiler_risk") or "low"), safety_flags=flags,
                        off_topic=bool(j.get("off_topic")), source=name)
     return base
+
+
+VISION_PROMPT = ("This image is a strip of frames from one video clip. Does any frame show nudity (bare buttocks, genitals or breasts), including of video game "
+                 "characters? Answer only JSON {\"nudity\": true/false, \"what\": \"...\"}.")
+
+
+def _call_groq_vision(key: str, jpg: bytes) -> str:
+    import base64
+    import time
+    for attempt in range(4):
+        r = httpx.post(GROQ_URL, timeout=40, headers={"Authorization": f"Bearer {key}"}, json={
+            "model": GROQ_VISION_MODEL, "temperature": 0,
+            "messages": [{"role": "user", "content": [
+                {"type": "text", "text": VISION_PROMPT},
+                {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + base64.b64encode(jpg).decode()}}]}]})
+        if r.status_code == 429 and attempt < 3:
+            time.sleep(min(30.0, float(r.headers.get("retry-after", 5 * (attempt + 1)))))
+            continue
+        break
+    r.raise_for_status()
+    return r.json()["choices"][0]["message"]["content"]
+
+
+def frames_have_nudity(frames: list[bytes], key: str, caller=_call_groq_vision) -> bool | None:
+    """True if any frame shows nudity, False if all clean, None if the check couldn't run."""
+    if not key or not frames:
+        return None
+    try:
+        for jpg in frames:
+            if _parse(caller(key, jpg)).get("nudity") is True:
+                return True
+        return False
+    except Exception as e:
+        log.warning("vision check failed: %s", e)
+        return None

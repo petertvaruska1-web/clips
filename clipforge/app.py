@@ -19,7 +19,7 @@ from .detector import ChannelDetector, Moment
 from .extractor import RawClip, extract_buffer, extract_vod
 from .facecam import find_facecam, sample_frames
 from .governor import Governor, keep_awake, set_low_priority
-from .judge import JudgeContext, judge
+from .judge import JudgeContext, frames_have_nudity, judge
 from .pipeline import choose_window, final_score
 from .recorder import Recorder
 from .render import RenderJob, probe_video, render_short
@@ -221,6 +221,17 @@ class App:
         finally:
             self._working = False
 
+    @staticmethod
+    def _frames(path: Path, s: float, e: float, n: int = 5) -> list[bytes]:
+        """One JPEG strip of n evenly spaced frames from [s, e] (one vision request per clip)."""
+        import subprocess
+        step = max(0.5, (e - s) / n)
+        r = subprocess.run(["ffmpeg", "-v", "error", "-ss", f"{s + step / 2:.2f}", "-t", f"{e - s:.2f}", "-i", str(path),
+                            "-vf", f"fps=1/{step:.3f},scale=320:-2,tile={n}x1", "-frames:v", "1",
+                            "-f", "image2pipe", "-vcodec", "mjpeg", "pipe:1"], capture_output=True,
+                           creationflags=0x08000000)
+        return [r.stdout] if r.stdout else []
+
     def _layout(self, ch: str, raw: Path) -> tuple[str, tuple | None]:
         info = probe_video(raw)
         cached = self.layouts.get(ch)
@@ -264,6 +275,10 @@ class App:
             reject = "off topic"
         elif not clip_words and strength < 6:
             reject = "no speech and no strong audio"
+        if not reject:
+            nude = frames_have_nudity(self._frames(raw.path, s, e), self.cfg.secrets.groq_api_key)
+            if nude:
+                reject = "nudity in frames"
         feats = {**m.features, "audio_strength": strength, "audio_excitement": audio,
                  "watchability": verdict.watchability, "judge": verdict.source, "words": len(clip_words),
                  "window": [s, e], "event_rel": ev}
