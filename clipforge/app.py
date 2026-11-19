@@ -20,7 +20,7 @@ from .extractor import RawClip, extract_buffer, extract_vod
 from .facecam import find_facecam, sample_frames
 from .governor import Governor, keep_awake, set_low_priority
 from .judge import JudgeContext, frames_have_nudity, judge
-from .pipeline import choose_window, final_score
+from .pipeline import choose_window, final_score, reject_reason
 from .recorder import Recorder
 from .render import RenderJob, probe_video, render_short
 from .scheduler import Candidate, Scheduler
@@ -308,15 +308,7 @@ class App:
         weight = self.cfg.streamers.get(m.channel, 1.0)
         score = final_score(hype=m.hype_peak, burst=min(1.0, m.burst_size / 15.0), viewer_clips=None,
                             audio=audio, watchability=verdict.watchability, weight=weight)
-        reject = None
-        if verdict.safety_flags:
-            reject = f"safety: {verdict.safety_flags}"
-        elif verdict.spoiler_risk == "high":
-            reject = "spoiler risk"
-        elif verdict.off_topic:
-            reject = "off topic"
-        elif not clip_words and strength < 6:
-            reject = "no speech and no strong audio"
+        reject = reject_reason(verdict, bool(clip_words), strength, self.cfg.posting.min_watchability)
         if not reject:
             nude = frames_have_nudity(self._frames(raw.path, s, e), self.cfg.secrets.groq_api_key)
             if nude:

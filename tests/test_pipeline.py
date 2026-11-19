@@ -57,3 +57,16 @@ def test_final_score_boosts_priority_streamers():
     a = final_score(hype=0.8, burst=0.5, viewer_clips=0.3, audio=0.5, watchability=6, weight=1.0)
     b = final_score(hype=0.8, burst=0.5, viewer_clips=0.3, audio=0.5, watchability=6, weight=1.5)
     assert b > a
+
+
+def test_reject_reason_quality_gate():
+    from clipforge.judge import Verdict
+    from clipforge.pipeline import reject_reason
+    v = Verdict(title="t", hook="h", hashtags=[], category="funny", watchability=3.0)
+    assert reject_reason(v, has_words=True, audio_strength=10, min_watchability=5) == "low AI watchability (3/10)"
+    v.watchability = 7.0
+    assert reject_reason(v, has_words=True, audio_strength=10, min_watchability=5) is None
+    v.watchability = None   # AI unavailable -> no quality gate
+    assert reject_reason(v, has_words=True, audio_strength=10, min_watchability=5) is None
+    v.safety_flags = ["slur"]
+    assert reject_reason(v, has_words=True, audio_strength=10, min_watchability=5).startswith("safety")

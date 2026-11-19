@@ -58,3 +58,18 @@ def final_score(hype: float, burst: float, viewer_clips: float | None, audio: fl
     total_w = sum(WEIGHTS[k] for k in used)
     base = sum(WEIGHTS[k] * float(np.clip(v, 0, 1)) for k, v in used.items()) / total_w if total_w else 0.0
     return float(np.clip(base * (1 + 0.3 * (weight - 1)), 0, 1))
+
+
+def reject_reason(verdict, has_words: bool, audio_strength: float, min_watchability: float) -> str | None:
+    """Why a processed clip must not be posted, or None if it may."""
+    if verdict.safety_flags:
+        return f"safety: {verdict.safety_flags}"
+    if verdict.spoiler_risk == "high":
+        return "spoiler risk"
+    if verdict.off_topic:
+        return "off topic"
+    if not has_words and audio_strength < 6:
+        return "no speech and no strong audio"
+    if verdict.watchability is not None and verdict.watchability < min_watchability:
+        return f"low AI watchability ({verdict.watchability:.0f}/10)"
+    return None

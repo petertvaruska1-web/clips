@@ -40,10 +40,12 @@ clip:
   chat_lag: 7      # typical delay between event and chat reaction
 
 posting:
-  per_day: 8
-  min_gap_minutes: 60
-  exceptional_extra: 3
-  per_streamer_day: 3
+  per_day: 20            # normal Shorts per rolling 24 h (YouTube API allows 100/day)
+  min_gap_minutes: 30    # at least 30 min between normal posts
+  exceptional_extra: 5   # extra instant posts for exceptional moments (3+ viewer clips / score >= 0.9)
+  per_streamer_day: 4    # variety: max Shorts per streamer per day
+  min_score: 0.6         # quality floor (0-1)
+  min_watchability: 5    # AI judge "would a stranger enjoy this" floor (0-10)
 
 youtube:
   privacy: public    # uploads go live automatically; set to "private" to pause public posting

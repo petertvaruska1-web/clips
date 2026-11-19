@@ -39,6 +39,7 @@ class Posting:
     exceptional_score: float = 0.9
     per_streamer_day: int = 3
     min_score: float = 0.45
+    min_watchability: float = 5.0
     half_life_hours: float = 6.0
 
 
