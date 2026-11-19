@@ -51,12 +51,15 @@ def _even(x: float) -> int:
 
 def build_filter(job: RenderJob, src_w: int, src_h: int, ass_path: Path, dur: float) -> str:
     te = max(0.0, job.t_event - job.a)
+    # Frame-accurate cut inside the filter graph (no input seeking: Twitch keyframes are 2 s apart and
+    # seeking into an MPEG-TS mid-GOP leaves the first frame frozen until the next keyframe).
+    cut = f"[0:v]trim=start={job.a:.3f}:duration={dur:.3f},setpts=PTS-STARTPTS[vin];"
     if job.layout == "stack" and job.facecam:
         fx, fy, fw, fh = job.facecam
         # gameplay crop: full height, width matching the panel aspect, centered
         gw = _even(min(src_w, src_h * 1080 / BOT_H))
         gx = _even((src_w - gw) / 2)
-        base = (f"[0:v]split=2[cam][game];"
+        base = (cut + f"[vin]split=2[cam][game];"
                 f"[cam]crop={_even(fw)}:{_even(fh)}:{fx}:{fy},scale=1080:{TOP_H}:force_original_aspect_ratio=increase,"
                 f"crop=1080:{TOP_H}[top];"
                 f"[game]crop={gw}:{_even(src_h)}:{gx}:0,scale=1080:{BOT_H}[bot];"
@@ -64,7 +67,7 @@ def build_filter(job: RenderJob, src_w: int, src_h: int, ass_path: Path, dur: fl
     else:
         fg_w = _even(src_w / 1.2 * 1.0)
         fg_h = _even(src_h / 1.2)
-        base = (f"[0:v]split=2[bgsrc][fgsrc];"
+        base = (cut + f"[vin]split=2[bgsrc][fgsrc];"
                 f"[bgsrc]scale=270:480:force_original_aspect_ratio=increase,crop=270:480,boxblur=8:2,"
                 f"eq=brightness=-0.12:saturation=1.1,scale=1080:1920[bg];"
                 f"[fgsrc]crop={fg_w}:{fg_h},scale=1080:-2[fg];"
@@ -92,11 +95,12 @@ def render_short(job: RenderJob) -> Path:
     ass_path.write_text(build_ass(job.words, job.a, job.hook, job.credit, job.layout, clip_len=dur),
                         encoding="utf-8")
     vf = build_filter(job, info["w"], info["h"], ass_path, dur)
-    af = (f"[0:a]loudnorm=I=-14:TP=-1:LRA=11,aresample=48000,afade=t=in:d=0.15,"
+    af = (f"[0:a]atrim=start={job.a:.3f}:duration={dur:.3f},asetpts=PTS-STARTPTS,"
+          f"loudnorm=I=-14:TP=-1:LRA=11,aresample=48000,afade=t=in:d=0.15,"
           f"afade=t=out:st={max(0.0, dur - 0.25):.2f}:d=0.25[aout]")
     last_err = ""
     for enc in _encoders(job.prefer_nvenc):
-        cmd = ["ffmpeg", "-v", "error", "-y", "-ss", f"{job.a:.3f}", "-t", f"{dur:.3f}", "-i", str(job.raw_path),
+        cmd = ["ffmpeg", "-v", "error", "-y", "-i", str(job.raw_path),
                "-filter_complex", vf + ";" + af, "-map", "[vout]", "-map", "[aout]", "-r", str(int(fps)),
                *enc, "-c:a", "aac", "-b:a", "160k", "-ar", "48000", "-movflags", "+faststart",
                "-t", f"{dur:.3f}", str(job.out_path)]

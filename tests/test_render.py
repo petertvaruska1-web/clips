@@ -64,3 +64,24 @@ def test_render_produces_vertical_short(src, tmp_path, layout):
 def test_no_facecam_in_test_pattern(src):
     from clipforge.facecam import find_facecam, sample_frames
     assert find_facecam(sample_frames(src, count=4), 1920, 1080) is None
+
+
+def _start_freeze(path):
+    out = subprocess.run(["ffmpeg", "-v", "info", "-t", "3", "-i", str(path), "-vf", "freezedetect=n=0.003:d=0.2",
+                          "-map", "0:v", "-f", "null", "-"], capture_output=True, text=True).stderr
+    for line in out.splitlines():
+        if "freeze_start: 0" in line or "freeze_start: 0." in line:
+            return True
+    return False
+
+
+def test_render_starting_mid_gop_has_no_frozen_start(tmp_path):
+    src = tmp_path / "gop.ts"
+    # 60 fps with a keyframe only every 2 s, like Twitch; content changes every frame
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=1280x720:rate=60",
+                    "-f", "lavfi", "-i", "sine=frequency=300:sample_rate=48000", "-t", "12",
+                    "-c:v", "libx264", "-preset", "ultrafast", "-g", "120", "-keyint_min", "120", "-sc_threshold", "0",
+                    "-c:a", "aac", "-f", "mpegts", str(src)], check=True)
+    job = RenderJob(raw_path=src, a=3.3, b=9.3, t_event=6.0, layout="fill", out_path=tmp_path / "o.mp4")
+    out = render_short(job)
+    assert not _start_freeze(out)
