@@ -15,6 +15,11 @@ def setup_logging() -> None:
     fh = logging.handlers.RotatingFileHandler(ROOT / "logs" / "clipforge.log", maxBytes=5_000_000, backupCount=5,
                                               encoding="utf-8")
     fh.setFormatter(fmt)
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass
     sh = logging.StreamHandler(sys.stdout)
     sh.setFormatter(fmt)
     root = logging.getLogger()
@@ -57,6 +62,11 @@ def status() -> None:
 
 
 def main() -> None:
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass
     cmd = sys.argv[1] if len(sys.argv) > 1 else "run"
     if cmd == "run":
         setup_logging()

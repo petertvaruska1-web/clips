@@ -393,6 +393,9 @@ class App:
         # resume: moments rendered before a restart stay in the queue
         for row in self.db.moments_in_state("uploading"):
             self.db.update_moment(row["id"], state="ready")
+        for st in ("detected", "extracted"):
+            for row in self.db.moments_in_state(st):
+                self.db.update_moment(row["id"], state="failed", note="interrupted by restart")
         tasks = [asyncio.create_task(x) for x in (self.chat.run(), self.scout_loop(), self.detect_loop(),
                                                     self.extract_loop(), self.publish_loop(), self.housekeeping_loop())]
         try:
