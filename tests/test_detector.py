@@ -97,3 +97,14 @@ def test_moment_carries_top_chat_lines():
     t = baseline(det, t, 60, rng=random.Random(3))
     m = run_ticks(det, T0, t + 5)[0]
     assert m.features["chat_lines"][0].lower() == "kekw"
+
+
+def test_cooldown_suppresses_second_moment_within_90s():
+    det = ChannelDetector("c", ClipCfg())
+    t = baseline(det, T0, 900)
+    users = [f"u{i}" for i in range(50)]
+    t = flood(det, t, 8, users)
+    t = baseline(det, t, 30, rng=random.Random(4))
+    t = flood(det, t, 8, users, text="OMEGALUL")
+    t = baseline(det, t, 80, rng=random.Random(5))
+    assert len(run_ticks(det, T0, t + 5)) == 1

@@ -42,7 +42,11 @@ def extract_vod(vod_url: str, vod_start: float, a: float, b: float, out: Path) -
     cmd = [_exe("yt-dlp"), "--quiet", "--no-warnings", "-f", "best[height<=1080]/best",
            "--download-sections", f"*{oa:.1f}-{ob:.1f}", "--force-overwrites",
            "-o", str(out.with_suffix(".%(ext)s")), vod_url]
-    r = subprocess.run(cmd, capture_output=True, text=True, creationflags=BELOW_NORMAL | NO_WINDOW)
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=240, creationflags=BELOW_NORMAL | NO_WINDOW)
+    except subprocess.TimeoutExpired:
+        log.warning("vod extract timed out (%s)", vod_url)
+        return None
     files = sorted(out.parent.glob(out.stem + ".*"))
     files = [f for f in files if f.suffix not in (".part", ".txt", ".ytdl")]
     if r.returncode != 0 or not files:

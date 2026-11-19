@@ -20,9 +20,11 @@ from .lexicon import categorize, normalize
 WINDOW = 5            # seconds for short-window signals
 CLIP_WINDOW = 10      # seconds for "clip it" demand
 BASELINE_SECONDS = 900
-WARMUP_SECONDS = 120
+WARMUP_SECONDS = 300
 LATE_SECONDS = 2      # wait for late messages before closing a second
-THRESH_FLOOR = 0.75
+THRESH_FLOOR = 0.9
+THRESH_PCT = 99.3
+COOLDOWN = 90
 OPEN_SECONDS = 2
 CLOSE_SECONDS = 4
 MERGE_GAP = 20
@@ -94,6 +96,7 @@ class ChannelDetector:
         self._below = 0
         self.burst: dict | None = None
         self.pending: dict | None = None      # closed burst waiting for merge gap
+        self.last_emit_end = -1e18
 
     # ---------- input ----------
     def feed(self, ev: ChatEvent) -> None:
@@ -216,7 +219,7 @@ class ChannelDetector:
     def threshold(self) -> float:
         if len(self.h_hist) < 300:
             return THRESH_FLOOR
-        return max(THRESH_FLOOR, float(np.percentile(np.fromiter(self.h_hist, float), 98.5)))
+        return max(THRESH_FLOOR, float(np.percentile(np.fromiter(self.h_hist, float), THRESH_PCT)))
 
     # ---------- state machine ----------
     def tick(self, now: float) -> list[Moment]:
@@ -240,7 +243,8 @@ class ChannelDetector:
             else:
                 self._above = 0
                 self._below = self._below + 1 if in_burst and f["h"] < 0.6 * thr else 0
-            if not in_burst and warm and self._above >= OPEN_SECONDS:
+            cooling = s - self.last_emit_end < COOLDOWN
+            if not in_burst and warm and self._above >= OPEN_SECONDS and (self.pending or not cooling):
                 if self.pending and s - self.pending["end"] <= MERGE_GAP:
                     self.burst, self.pending = self.pending, None
                 else:
@@ -262,6 +266,7 @@ class ChannelDetector:
                 self.h_hist.append(f["h"])
             if self.pending and self.burst is None and s - self.pending["end"] > MERGE_GAP:
                 out.append(self._emit(self.pending))
+                self.last_emit_end = self.pending["end"]
                 self.pending = None
             self._gc(s)
         return out

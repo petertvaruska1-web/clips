@@ -33,6 +33,8 @@ log = logging.getLogger("clipforge")
 SCOUT_EVERY = 120
 BUFFER_KEEP = 300
 VOD_RETRY_FOR = 15 * 60
+VOD_MIN_HYPE = 0.97
+MAX_QUEUE_AGE = 30 * 60
 LAYOUT_TTL = 30 * 60
 
 
@@ -68,6 +70,8 @@ class App:
         self._working = False
         self.governor = Governor(ours_busy=lambda: self._working)
         self.pending: dict[int, dict] = {}           # moment id -> extraction info
+        self.raw_queue: list = []                    # (mid, RawClip, Moment) waiting for processing
+        self.vod_sem = asyncio.Semaphore(2)
         self.layouts_file = d / "layouts.json"
         self.layouts: dict = json.loads(self.layouts_file.read_text()) if self.layouts_file.exists() else {}
         self.chat_log: dict[str, object] = {}
@@ -174,30 +178,68 @@ class App:
                     self.db.update_moment(mid, state="failed", note=f"extract: {e}"[:300])
             await asyncio.sleep(3)
 
+    def _queue_raw(self, mid: int, raw: RawClip, m: Moment) -> None:
+        self.pending.pop(mid, None)
+        self.db.update_moment(mid, state="extracted", raw_path=str(raw.path))
+        self.raw_queue.append((mid, raw, m))
+
     async def _try_extract(self, mid: int, p: dict) -> None:
         now = time.time()
         ch, a, b = p["channel"], p["a"], p["b"]
-        raw: RawClip | None = None
+        if p.get("vod_busy"):
+            return
         rec = self.recorders.get(ch)
         out = self.dirs["raw"] / f"{mid}_{ch}.ts"
-        if rec is not None:
+        if rec is not None and not p.get("buffer_failed"):
             last = rec.index.latest_time() or 0
             if last < b and now - p["created"] < 90:
                 return  # wait for the buffer to reach the clip end
             raw = await asyncio.to_thread(extract_buffer, rec.index, a, b, out)
-        if raw is None:
-            if now - p.get("vod_tried", 0) < 60:
+            if raw is not None:
+                self._queue_raw(mid, raw, p["moment"])
                 return
-            p["vod_tried"] = now
-            raw = await self._extract_from_vod(ch, a, b, out.with_suffix(".mp4"))
-            if raw is None:
-                if now - p["created"] > VOD_RETRY_FOR:
-                    self.pending.pop(mid, None)
-                    self.db.update_moment(mid, state="dropped", note="no buffer and no VOD")
-                return
-        self.pending.pop(mid, None)
-        self.db.update_moment(mid, state="extracted", raw_path=str(raw.path))
-        self.worker.submit(self._process_safe, mid, raw, p["moment"])
+            p["buffer_failed"] = True
+        # no live buffer: cut from the VOD, but only for strong moments (VOD downloads are heavy)
+        if p["moment"].hype_peak < VOD_MIN_HYPE:
+            self.pending.pop(mid, None)
+            self.db.update_moment(mid, state="dropped", note="chat-only moment below VOD threshold")
+            return
+        if now - p["created"] > VOD_RETRY_FOR:
+            self.pending.pop(mid, None)
+            self.db.update_moment(mid, state="dropped", note="no buffer and no VOD")
+            return
+        if now - p.get("vod_tried", 0) < 60:
+            return
+        p["vod_tried"], p["vod_busy"] = now, True
+        asyncio.create_task(self._vod_task(mid, p, out.with_suffix(".mp4")))
+
+    async def _vod_task(self, mid: int, p: dict, out: Path) -> None:
+        try:
+            async with self.vod_sem:
+                raw = await self._extract_from_vod(p["channel"], p["a"], p["b"], out)
+            if raw is not None and mid in self.pending:
+                self._queue_raw(mid, raw, p["moment"])
+        except Exception as e:
+            log.warning("VOD cut #%d failed: %s", mid, e)
+        finally:
+            p["vod_busy"] = False
+
+    async def process_loop(self) -> None:
+        """Process the strongest waiting clip first; stale ones are dropped (we post only a few per day)."""
+        while True:
+            now = time.time()
+            for item in list(self.raw_queue):
+                if now - item[2].t_event > MAX_QUEUE_AGE:
+                    self.raw_queue.remove(item)
+                    item[1].path.unlink(missing_ok=True)
+                    self.db.update_moment(item[0], state="dropped", note="stale before processing")
+            if self.raw_queue:
+                best = max(self.raw_queue, key=lambda it: it[2].hype_peak * self.cfg.streamers.get(it[2].channel, 1.0)
+                           + 0.1 * min(1.0, it[2].burst_size / 15))
+                self.raw_queue.remove(best)
+                await asyncio.to_thread(self._process_safe, *best)
+            else:
+                await asyncio.sleep(2)
 
     async def _extract_from_vod(self, ch: str, a: float, b: float, out: Path) -> RawClip | None:
         info = self.stream_info.get(ch)
@@ -412,7 +454,7 @@ class App:
             for row in self.db.moments_in_state(st):
                 self.db.update_moment(row["id"], state="failed", note="interrupted by restart")
         tasks = [asyncio.create_task(x) for x in (self.chat.run(), self.scout_loop(), self.detect_loop(),
-                                                    self.extract_loop(), self.publish_loop(), self.housekeeping_loop())]
+                                                    self.extract_loop(), self.process_loop(), self.publish_loop(), self.housekeeping_loop())]
         try:
             await asyncio.gather(*tasks)
         finally:
