@@ -34,6 +34,33 @@ def sample_frames(path: Path, count: int = 12, width: int = 960) -> list[np.ndar
 
 def find_facecam(frames: list[np.ndarray], src_w: int, src_h: int) -> tuple[int, int, int, int] | None:
     """Return (x, y, w, h) in source pixels for the facecam crop, or None."""
+    face = find_face(frames, src_w, src_h)
+    return facecam_box(face, src_w, src_h) if face else None
+
+
+def facecam_box(face: tuple[int, int, int], src_w: int, src_h: int) -> tuple[int, int, int, int]:
+    """Wide crop (for the full-width stack panel) around a face given as (cx, cy, face_w) in source px."""
+    cx, cy, fw = face
+    cw = min(fw * 4.3, src_w * 0.5)
+    ch = cw / PANEL_ASPECT
+    x = int(np.clip(cx - cw / 2, 0, src_w - cw))
+    y = int(np.clip(cy - ch * 0.45, 0, src_h - ch))
+    return x, y, int(min(cw, src_w)), int(min(ch, src_h))
+
+
+def inset_box(face: tuple[int, int, int], src_w: int, src_h: int, aspect: float = PANEL_ASPECT,
+              zoom: float = 2.8) -> tuple[int, int, int, int]:
+    """Tight crop centred on the face, for the small webcam inset of the split layout."""
+    cx, cy, fw = face
+    cw = min(fw * zoom, src_w * 0.35)
+    ch = cw / aspect
+    x = int(np.clip(cx - cw / 2, 0, src_w - cw))
+    y = int(np.clip(cy - ch * 0.45, 0, src_h - ch))
+    return x, y, int(cw) // 2 * 2, int(ch) // 2 * 2
+
+
+def find_face(frames: list[np.ndarray], src_w: int, src_h: int) -> tuple[int, int, int] | None:
+    """Return the streamer's face as (center_x, center_y, face_width) in source pixels, or None."""
     if not frames or not MODEL.exists():
         return None
     h, w = frames[0].shape[:2]
@@ -61,9 +88,4 @@ def find_facecam(frames: list[np.ndarray], src_w: int, src_h: int) -> tuple[int,
         return None
     cx, cy, fw = float(np.median(best[:, 0])), float(np.median(best[:, 1])), float(np.median(best[:, 2]))
     scale = src_w / w
-    cw = min(fw * 4.3, w * 0.5)
-    ch = cw / PANEL_ASPECT
-    x = int(np.clip((cx - cw / 2), 0, w - cw) * scale)
-    y = int(np.clip((cy - ch * 0.45), 0, h - ch) * scale)
-    cw_s, ch_s = int(min(cw * scale, src_w)), int(min(ch * scale, src_h))
-    return x, y, cw_s, ch_s
+    return int(cx * scale), int(cy * scale), int(fw * scale)

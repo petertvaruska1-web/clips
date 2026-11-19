@@ -12,12 +12,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .audio import loudness_curve, mean_excitement
+from .background import BackgroundPicker
 from .chat import ChatClient, ChatEvent
 from .config import ROOT, Config, load_config
 from .db import Database
 from .detector import ChannelDetector, Moment
 from .extractor import RawClip, extract_buffer, extract_vod
-from .facecam import find_facecam, sample_frames
+from .facecam import facecam_box, find_face, sample_frames
 from .governor import Governor, keep_awake, set_low_priority
 from .judge import JudgeContext, frames_have_nudity, judge
 from .pipeline import choose_window, final_score, reject_reason
@@ -34,6 +35,8 @@ SCOUT_EVERY = 120
 BUFFER_KEEP = 300
 VOD_RETRY_FOR = 15 * 60
 VOD_MIN_HYPE = 0.97
+VOD_MAX_WAITING = 4
+UPLOAD_LIMIT_PAUSE = 3 * 3600
 MAX_QUEUE_AGE = 30 * 60
 LAYOUT_TTL = 30 * 60
 
@@ -85,6 +88,8 @@ class App:
         self.layouts: dict = json.loads(self.layouts_file.read_text()) if self.layouts_file.exists() else {}
         self.chat_log: dict[str, object] = {}
         self._warned: set[str] = set()
+        self.bg_picker = BackgroundPicker()
+        self.upload_pause_until = 0.0
 
     # ---------------- chat ----------------
     def on_chat(self, ev: ChatEvent) -> None:
@@ -196,6 +201,9 @@ class App:
         now = time.time()
         ch, a, b = p["channel"], p["a"], p["b"]
         if p.get("vod_busy"):
+            if now - p["created"] > VOD_RETRY_FOR:   # still waiting for a VOD slot: give up
+                self.pending.pop(mid, None)
+                self.db.update_moment(mid, state="dropped", note="VOD queue too slow")
             return
         rec = self.recorders.get(ch)
         out = self.dirs["raw"] / f"{mid}_{ch}.ts"
@@ -219,12 +227,19 @@ class App:
             return
         if now - p.get("vod_tried", 0) < 60:
             return
+        if sum(1 for q in self.pending.values() if q.get("vod_busy")) >= VOD_MAX_WAITING:
+            if now - p["created"] > 120:
+                self.pending.pop(mid, None)
+                self.db.update_moment(mid, state="dropped", note="VOD queue full")
+            return
         p["vod_tried"], p["vod_busy"] = now, True
         asyncio.create_task(self._vod_task(mid, p, out.with_suffix(".mp4")))
 
     async def _vod_task(self, mid: int, p: dict, out: Path) -> None:
         try:
             async with self.vod_sem:
+                if mid not in self.pending:      # dropped while waiting for a slot
+                    return
                 raw = await self._extract_from_vod(p["channel"], p["a"], p["b"], out)
             if raw is not None and mid in self.pending:
                 self._queue_raw(mid, raw, p["moment"])
@@ -283,16 +298,30 @@ class App:
                            creationflags=0x08000000)
         return [r.stdout] if r.stdout else []
 
-    def _layout(self, ch: str, raw: Path) -> tuple[str, tuple | None]:
+    def _layout(self, ch: str, raw: Path) -> tuple[str, tuple | None, tuple | None]:
+        """Returns (layout, facecam crop box, face (cx, cy, w)) for the channel, cached for LAYOUT_TTL."""
         info = probe_video(raw)
         cached = self.layouts.get(ch)
-        if cached and time.time() - cached["at"] < LAYOUT_TTL and cached.get("src") == [info["w"], info["h"]]:
-            fc = tuple(cached["facecam"]) if cached["facecam"] else None
+        if (cached and "face" in cached and time.time() - cached["at"] < LAYOUT_TTL
+                and cached.get("src") == [info["w"], info["h"]]):
+            face = tuple(cached["face"]) if cached["face"] else None
         else:
-            fc = find_facecam(sample_frames(raw), info["w"], info["h"])
-            self.layouts[ch] = {"facecam": list(fc) if fc else None, "at": time.time(), "src": [info["w"], info["h"]]}
+            face = find_face(sample_frames(raw), info["w"], info["h"])
+            fc_new = facecam_box(face, info["w"], info["h"]) if face else None
+            self.layouts[ch] = {"facecam": list(fc_new) if fc_new else None, "face": list(face) if face else None,
+                                "at": time.time(), "src": [info["w"], info["h"]]}
             self.layouts_file.write_text(json.dumps(self.layouts, indent=1))
-        return ("stack" if fc else "fill"), fc
+        fc = facecam_box(face, info["w"], info["h"]) if face else None
+        return ("stack" if fc else "fill"), fc, face
+
+    def next_style(self) -> str:
+        """Alternate split-screen and original 50/50, balanced over what was posted or is postable."""
+        now = time.time()
+        rows = [r for r in self.db.moments_in_state("uploaded") if now - r["t_event"] < 48 * 3600]
+        rows += [r for r in self.db.moments_in_state("ready") if (r["score"] or 0) >= self.cfg.posting.min_score]
+        styles = [(r["features"] or {}).get("style") for r in rows]   # clips from before the 50/50 have none
+        split = styles.count("split")
+        return "split" if split <= styles.count("original") else "original"
 
     def process(self, mid: int, raw: RawClip, m: Moment) -> None:
         cfg = self.cfg.clip
@@ -331,10 +360,16 @@ class App:
             log.info("moment #%d rejected: %s", mid, reject)
             raw.path.unlink(missing_ok=True)
             return
-        layout, fc = self._layout(m.channel, raw.path)
+        layout, fc, face = self._layout(m.channel, raw.path)
+        bg = self.bg_picker.pick(e - s) if self.next_style() == "split" else None
+        if bg is not None:
+            layout = "split"
+            feats["bg"] = {"category": bg.category, "credit": bg.credit}
+        feats["style"] = "split" if bg is not None else "original"
         out = self.dirs["out"] / f"{mid}_{m.channel}.mp4"
         render_short(RenderJob(raw_path=raw.path, a=s, b=e, t_event=ev, layout=layout, facecam=fc,
-                               words=clip_words, hook=verdict.hook, credit=f"twitch.tv/{m.channel}", out_path=out))
+                               words=clip_words, hook=verdict.hook, credit=f"twitch.tv/{m.channel}", out_path=out,
+                               bg=bg, face=face))
         raw.path.unlink(missing_ok=True)
         self.db.update_moment(mid, state="ready", score=score, out_path=str(out), title=verdict.title,
                               hook=verdict.hook, hashtags=json.dumps(verdict.hashtags), category=verdict.category,
@@ -384,6 +419,8 @@ class App:
                  if now - r["t_event"] <= 36 * 3600 and r["out_path"] and Path(r["out_path"]).exists()]
         if not cands:
             return
+        if now < self.upload_pause_until:
+            return
         if not self.youtube.configured:
             self._warn_once("yt", "YouTube not connected yet (python -m clipforge auth-youtube) — clips queue up")
             return
@@ -397,13 +434,18 @@ class App:
         exceptional = self.scheduler.is_exceptional(pick, now, hist)
         info = self.stream_info.get(row["channel"], {})
         body = build_metadata(row["title"], row["channel"], info.get("user_name") or row["channel"],
-                              json.loads(row["hashtags"] or "[]"), self.cfg.youtube)
+                              json.loads(row["hashtags"] or "[]"), self.cfg.youtube,
+                              bg_credit=((row["features"] or {}).get("bg") or {}).get("credit", ""))
         self.db.update_moment(row["id"], state="uploading")
         try:
             vid = await asyncio.to_thread(self.youtube.upload, Path(row["out_path"]), body)
         except Exception as e:
             log.warning("upload of #%d failed: %s", row["id"], e)
             self.db.update_moment(row["id"], state="ready")
+            if "uploadLimitExceeded" in str(e) or "exceeded the number of videos" in str(e):
+                self.upload_pause_until = time.time() + UPLOAD_LIMIT_PAUSE
+                log.warning("YouTube daily upload limit reached; pausing uploads for %d h",
+                            UPLOAD_LIMIT_PAUSE // 3600)
             return
         self.db.add_upload(row["id"], video_id=vid, title=body["snippet"]["title"], channel=row["channel"],
                            published_at=time.time(), exceptional=exceptional)
@@ -423,8 +465,8 @@ class App:
         while True:
             try:
                 now = time.time()
-                pins = [(p["a"], p["b"]) for p in self.pending.values()]
                 for c, r in list(self.recorders.items()):
+                    pins = [(p["a"], p["b"]) for p in self.pending.values() if p["channel"] == c]
                     r.index.prune(now, BUFFER_KEEP, pins)
                     if not r.alive():
                         log.warning("recorder %s stalled; restarting", c)

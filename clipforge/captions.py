@@ -56,9 +56,11 @@ def chunk_words(words: list[Word], max_words: int = 3, max_gap: float = 0.6, max
 
 
 def build_ass(words: list[Word], clip_start: float, hook: str, credit: str, layout: str,
-              clip_len: float | None = None, hook_dur: float = 2.5) -> str:
-    cap_y = int(H * 0.62)
-    hook_y = 672 if layout == "stack" else 300
+              clip_len: float | None = None, hook_dur: float = 2.5, cap_y: int | None = None,
+              hook_y: int | None = None, credit_an: int = 7) -> str:
+    cap_y = cap_y if cap_y is not None else int(H * 0.62)
+    if hook_y is None:
+        hook_y = 672 if layout == "stack" else 300
     lines = [HEADER.format(font=FONT)]
     chunks = chunk_words(words)
     for k, chunk in enumerate(chunks):
@@ -90,5 +92,6 @@ def build_ass(words: list[Word], clip_start: float, hook: str, credit: str, layo
                      "{\\pos(540," + str(hook_y) + ")\\fad(0,200)}" + _clean(hook))
     if credit:
         end = clip_len if clip_len else 3600
-        lines.append(f"Dialogue: 0,{_ts(0)},{_ts(end)},Credit,,0,0,0,,{credit.replace('{', '')}")
+        an = "" if credit_an == 7 else "{\\an" + str(credit_an) + "}"
+        lines.append(f"Dialogue: 0,{_ts(0)},{_ts(end)},Credit,,0,0,0,,{an}{credit.replace('{', '')}")
     return "\n".join(lines) + "\n"

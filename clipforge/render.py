@@ -7,7 +7,9 @@ import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .background import PANEL_H, PANEL_W, Background
 from .captions import build_ass
+from .facecam import inset_box
 from .config import ROOT
 from .recorder import BELOW_NORMAL, NO_WINDOW
 from .transcribe import Word
@@ -18,6 +20,11 @@ TOP_H = 672           # stack layout: facecam panel height (35%)
 BOT_H = 1920 - TOP_H  # gameplay panel
 PUNCH = 1.08
 PUNCH_HOLD = 1.6
+CAM_W = 400            # split layout: webcam inset width
+CAM_MARGIN = 30
+CAM_BORDER = 5
+GAME_ZOOM = 1.15      # split layout: zoom on the stream gameplay
+INSET_ZOOM = 0.62      # inset shows the central 62% of the facecam crop
 
 
 @dataclass
@@ -26,13 +33,77 @@ class RenderJob:
     a: float                       # clip start, seconds into raw file
     b: float                       # clip end
     t_event: float                 # event time, seconds into raw file
-    layout: str                    # "stack" | "fill"
+    layout: str                    # "stack" | "fill" (original style) | "split" (needs bg)
     out_path: Path
     facecam: tuple[int, int, int, int] | None = None   # x, y, w, h in source pixels
     words: list[Word] = field(default_factory=list)   # times in raw-file seconds
     hook: str = ""
     credit: str = ""
     prefer_nvenc: bool = True
+    bg: Background | None = None   # split layout: satisfying gameplay for the bottom half
+    face: tuple[int, int, int] | None = None   # streamer's face (cx, cy, face_w) in source pixels
+
+
+def cam_side(job: RenderJob, src_w: int) -> str:
+    if not job.facecam:
+        return ""
+    fx, _, fw, _ = job.facecam
+    return "left" if fx + fw / 2 < src_w / 2 else "right"
+
+
+def split_ass_layout(job: RenderJob, src_w: int) -> dict:
+    """Caption/hook/credit placement for the split layout: captions sit on the seam."""
+    side = cam_side(job, src_w)
+    cam_h = _even(CAM_W / (1080 / 672))
+    return {"cap_y": PANEL_H, "hook_y": CAM_MARGIN + cam_h + 110 if side else 200,
+            "credit_an": 9 if side == "left" else 7}
+
+
+def build_split_filter(job: RenderJob, src_w: int, src_h: int, ass_path: Path, dur: float) -> str:
+    """Top half: stream gameplay (+ webcam inset). Bottom half: background gameplay. Captions on the seam."""
+    te = max(0.0, job.t_event - job.a)
+    # slight zoom on the stream gameplay: streamers park chat, alerts and the webcam at the edges
+    gh = _even(src_h / GAME_ZOOM)
+    gw = _even(min(src_w, gh * PANEL_W / PANEL_H))
+    gx, gy = (src_w - gw) / 2, _even((src_h - gh) / 2)
+    side = cam_side(job, src_w)
+    if side:   # nudge the crop a little away from the facecam so it isn't shown twice
+        fx, _, fw, _ = job.facecam
+        cap = 60 * src_w / 1920
+        if side == "left":
+            gx = min(gx + cap, max(gx, fx + fw), src_w - gw)
+        else:
+            gx = max(gx - cap, min(gx, fx - gw), 0)
+    gx = _even(gx)
+    pw, ph = _even(PANEL_W * PUNCH), _even(PANEL_H * PUNCH)
+    f = (f"[0:v]trim=start={job.a:.3f}:duration={dur:.3f},setpts=PTS-STARTPTS[vin];"
+         + ("[vin]split=2[cam][game];" if side else "[vin]null[game];")
+         + f"[game]crop={gw}:{gh}:{gx}:{gy},scale={PANEL_W}:{PANEL_H}:flags=lanczos,setsar=1[g0];"
+         f"[g0]split=2[gn][gz];[gz]scale={pw}:{ph},crop={PANEL_W}:{PANEL_H}[gzz];"
+         f"[gn][gzz]overlay=0:0:enable='between(t,{te:.2f},{te + PUNCH_HOLD:.2f})'[g1];")
+    if side:
+        ch = _even(CAM_W / (1080 / 672))
+        if job.face:
+            fx, fy, fw, fh = inset_box(job.face, src_w, src_h, aspect=CAM_W / ch)
+        else:   # older cache entries: zoom into the middle of the wide facecam crop
+            fx, fy, fw, fh = job.facecam
+            cx, cy = fx + fw / 2, fy + fh * 0.45
+            fw, fh = _even(fw * INSET_ZOOM), _even(fh * INSET_ZOOM)
+            fx = int(min(max(0, cx - fw / 2), src_w - fw))
+            fy = int(min(max(0, cy - fh * 0.45), src_h - fh))
+        x = CAM_MARGIN if side == "left" else PANEL_W - CAM_W - CAM_MARGIN
+        b = CAM_BORDER
+        f += (f"[cam]crop={_even(fw)}:{_even(fh)}:{fx}:{fy},scale={CAM_W - 2 * b}:{ch - 2 * b}:"
+              f"force_original_aspect_ratio=increase,crop={CAM_W - 2 * b}:{ch - 2 * b},"
+              f"pad={CAM_W}:{ch}:{b}:{b}:color=white@0.9,setsar=1[ci];"
+              f"[g1][ci]overlay={x}:{CAM_MARGIN}[top];")
+    else:
+        f += "[g1]null[top];"
+    f += (f"[1:v]trim=duration={dur:.3f},setpts=PTS-STARTPTS,scale={PANEL_W}:{PANEL_H},setsar=1[bot];"
+          f"[top][bot]vstack=inputs=2[st];")
+    ass = ass_path.as_posix().replace(":", r"\:")
+    fonts = FONTS_DIR.as_posix().replace(":", r"\:")
+    return f + f"[st]ass='{ass}':fontsdir='{fonts}',format=yuv420p[vout]"
 
 
 def probe_video(path: Path) -> dict:
@@ -92,15 +163,20 @@ def render_short(job: RenderJob) -> Path:
     fps = min(60.0, round(info["fps"])) or 30.0
     job.out_path.parent.mkdir(parents=True, exist_ok=True)
     ass_path = job.out_path.with_suffix(".ass")
-    ass_path.write_text(build_ass(job.words, job.a, job.hook, job.credit, job.layout, clip_len=dur),
+    split = job.layout == "split" and job.bg is not None
+    if job.layout == "split" and not split:
+        job.layout = "stack" if job.facecam else "fill"
+    place = split_ass_layout(job, info["w"]) if split else {}
+    ass_path.write_text(build_ass(job.words, job.a, job.hook, job.credit, job.layout, clip_len=dur, **place),
                         encoding="utf-8")
-    vf = build_filter(job, info["w"], info["h"], ass_path, dur)
+    vf = (build_split_filter if split else build_filter)(job, info["w"], info["h"], ass_path, dur)
+    bg_in = ["-ss", f"{job.bg.offset:.2f}", "-t", f"{dur + 1:.2f}", "-i", str(job.bg.path)] if split else []
     af = (f"[0:a]atrim=start={job.a:.3f}:duration={dur:.3f},asetpts=PTS-STARTPTS,"
           f"loudnorm=I=-14:TP=-1:LRA=11,aresample=48000,afade=t=in:d=0.15,"
           f"afade=t=out:st={max(0.0, dur - 0.25):.2f}:d=0.25[aout]")
     last_err = ""
     for enc in _encoders(job.prefer_nvenc):
-        cmd = ["ffmpeg", "-v", "error", "-y", "-i", str(job.raw_path),
+        cmd = ["ffmpeg", "-v", "error", "-y", "-i", str(job.raw_path), *bg_in,
                "-filter_complex", vf + ";" + af, "-map", "[vout]", "-map", "[aout]", "-r", str(int(fps)),
                *enc, "-c:a", "aac", "-b:a", "160k", "-ar", "48000", "-movflags", "+faststart",
                "-t", f"{dur:.3f}", str(job.out_path)]

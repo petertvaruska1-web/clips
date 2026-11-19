@@ -16,3 +16,10 @@ def test_metadata_has_credit_tags_and_privacy():
 def test_title_is_trimmed_to_100():
     body = build_metadata(title="x" * 200, streamer="a", display="A", hashtags=[], cfg=YouTubeCfg())
     assert len(body["snippet"]["title"]) <= 100
+
+
+def test_metadata_credits_background_footage():
+    from clipforge.config import YouTubeCfg
+    body = build_metadata("t", "kaicenat", "KaiCenat", [], YouTubeCfg(), bg_credit="Orbital (CC BY) https://youtu.be/x")
+    assert "Background gameplay: Orbital (CC BY)" in body["snippet"]["description"]
+    assert "Background gameplay" not in build_metadata("t", "k", "K", [], YouTubeCfg())["snippet"]["description"]

@@ -11,7 +11,8 @@ log = logging.getLogger(__name__)
 SCOPES = ["https://www.googleapis.com/auth/youtube.upload", "https://www.googleapis.com/auth/youtube.readonly"]
 
 
-def build_metadata(title: str, streamer: str, display: str, hashtags: list[str], cfg: YouTubeCfg) -> dict:
+def build_metadata(title: str, streamer: str, display: str, hashtags: list[str], cfg: YouTubeCfg,
+                   bg_credit: str = "") -> dict:
     tags = []
     for h in [*hashtags, *cfg.extra_hashtags]:
         h = "#" + h.lstrip("#").replace(" ", "")
@@ -21,7 +22,8 @@ def build_metadata(title: str, streamer: str, display: str, hashtags: list[str],
     if len(full) > 100:
         full = title[:100]
     desc = (f"{display} live on Twitch: https://twitch.tv/{streamer}\n"
-            f"Clip from {display}'s GTA 6 stream. All credit to {display} — go follow them!\n\n"
+            f"Clip from {display}'s GTA 6 stream. All credit to {display} — go follow them!\n"
+            + (f"Background gameplay: {bg_credit}\n" if bg_credit else "") + "\n"
             + " ".join(tags[:8]))
     return {
         "snippet": {"title": full, "description": desc, "categoryId": cfg.category_id,
